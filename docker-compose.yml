@@ -1,0 +1,57 @@
+services:
+  postgres:
+    image: postgres:15.3
+    container_name: task-postgres
+    environment:
+      POSTGRES_USER: task_user
+      POSTGRES_PASSWORD: task_password
+      POSTGRES_DB: task_db
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U task_user -d task_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  task:
+    build:
+      context: ./services/task
+    container_name: task-service
+    environment:
+      DATABASE_URL: postgresql://task_user:task_password@postgres:5432/task_db
+    ports:
+      - "8001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  user:
+    build:
+      context: ./services/user
+    container_name: user-service
+    environment:
+      DATABASE_URL: postgresql://task_user:task_password@postgres:5432/task_db
+    ports:
+      - "8002:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  migrations:
+    build:
+      context: .
+      dockerfile: infra/migrations/Dockerfile
+    container_name: task-migrations
+    environment:
+      DATABASE_URL: postgresql+psycopg://task_user:task_password@postgres:5432/task_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - tools
+
+volumes:
+  postgres_data:
