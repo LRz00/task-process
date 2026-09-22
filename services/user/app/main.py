@@ -5,9 +5,9 @@ from fastapi import FastAPI, HTTPException, status
 from psycopg import OperationalError, connect
 from psycopg.errors import ForeignKeyViolation, UniqueViolation
 from psycopg.rows import dict_row
-from pydantic import BaseModel, Field, field_validator
 
-from app.models.user_create import UserCreate
+from app.schemas.user_create import UserCreate
+from app.schemas.user_group_create import UserGroupCreate
 from app.queries.user_queries import (
     CREATE_USER_GROUP_MEMBERS_TABLE,
     CREATE_USER_GROUP_TABLE,
@@ -28,20 +28,6 @@ DATABASE_URL = os.getenv(
 app = FastAPI()
 
 
-class UserGroupCreate(BaseModel):
-    user_ids: list[int] = Field(min_length=1)
-
-    @field_validator("user_ids")
-    @classmethod
-    def validate_user_ids(cls, values: list[int]) -> list[int]:
-        unique_values = sorted(set(values))
-        if len(unique_values) != len(values):
-            raise ValueError("user_ids must not contain duplicates")
-        if any(user_id <= 0 for user_id in unique_values):
-            raise ValueError("user_ids must contain positive integers")
-        return unique_values
-
-
 def _to_iso8601(value: datetime | None) -> str | None:
     if value is None:
         return None
@@ -57,7 +43,7 @@ def _ensure_group_tables(conn) -> None:
 def _assert_users_exist(conn, user_ids: list[int]) -> None:
     with conn.cursor() as cur:
         cur.execute(SELECT_EXISTING_USER_IDS, (user_ids,))
-        existing_ids = {row[0] for row in cur.fetchall()}
+        existing_ids = {row["id"] for row in cur.fetchall()}
     missing_ids = [user_id for user_id in user_ids if user_id not in existing_ids]
     if missing_ids:
         raise HTTPException(

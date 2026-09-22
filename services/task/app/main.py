@@ -7,8 +7,8 @@ from psycopg.errors import ForeignKeyViolation
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field, field_validator
 
-from app.models.task_create import TaskCreate
-from app.models.task_update import TaskUpdate
+from app.schemas.task_create import TaskCreate
+from app.schemas.task_update import TaskUpdate
 from app.queries.task_queries import (
     INSERT_TASK,
     INSERT_TASK_SHARE,
@@ -58,12 +58,12 @@ def _assert_user_exists(conn, user_id: int) -> None:
 def _assert_users_exist(conn, user_ids: list[int]) -> None:
     with conn.cursor() as cur:
         cur.execute(SELECT_EXISTING_USER_IDS, (user_ids,))
-        existing_ids = {row[0] for row in cur.fetchall()}
-    missing = [user_id for user_id in user_ids if user_id not in existing_ids]
-    if missing:
+        existing_ids = {row["id"] for row in cur.fetchall()}
+    missing_ids = set(user_ids) - existing_ids
+    if missing_ids:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail={"message": "some users were not found", "missing_user_ids": missing},
+            detail=f"Users not found: {sorted(missing_ids)}",
         )
 
 
