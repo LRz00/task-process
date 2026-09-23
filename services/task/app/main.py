@@ -7,13 +7,13 @@ from psycopg.errors import ForeignKeyViolation
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field, field_validator
 
+from app.otel_config import init_opentelemetry, instrument_fastapi_app
 from app.schemas.task_create import TaskCreate
 from app.schemas.task_update import TaskUpdate
 from app.queries.task_queries import (
     INSERT_TASK,
     INSERT_TASK_SHARE,
     SELECT_EXISTING_USER_IDS,
-    SELECT_HEALTH_CHECK,
     SELECT_TASKS,
     SELECT_TASK_WITH_SHARES,
     SELECT_USER_BY_ID,
@@ -24,7 +24,13 @@ DATABASE_URL = os.getenv(
     "DATABASE_URL", "postgresql://task_user:task_password@localhost:5432/task_db"
 )
 
+# Initialize OpenTelemetry
+init_opentelemetry(service_name="task-service")
+
 app = FastAPI(title="Task Service")
+
+# Instrument FastAPI app
+instrument_fastapi_app(app)
 
 
 class TaskShareUpdate(BaseModel):
@@ -90,17 +96,48 @@ def _serialize_task(row: dict) -> dict:
         "shared_with": row["shared_with"],
     }
 
+def check_database(database_url: str) -> bool:
+    try:
+        with connect(database_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+        return True
+    except (OperationalError, Exception):
+        return False
+
+@app.get("/health/live")
+def liveness_probe():
+        return {
+        "status": "alive",
+        "service": "user-service",
+    }
+
+@app.get("/health/ready")
+def readiness_probe():
+    db_connected = check_database(DATABASE_URL)
+    
+    return {
+            "status": "ready" if db_connected else "not_ready",
+            "service": "user-service",
+            "checks": {
+                "database": "connected" if db_connected else "disconnected",
+            },
+        }
+
+
 @app.get("/health")
 def health():
-    try:
-        with connect(DATABASE_URL) as conn:
-            with conn.cursor() as cur:
-                cur.execute(SELECT_HEALTH_CHECK)
-                cur.fetchone()
-        database = "connected"
-    except OperationalError:
-        database = "disconnected"
-    return {"status": "OK", "database": database}
+    db_connected = check_database(DATABASE_URL)
+
+    return {
+        "status": "OK" if db_connected else "DEGRADED",
+        "service": "user-service",
+        "liveness": "alive",
+        "readiness": "ready" if db_connected else "not_ready",
+        "database": "connected" if db_connected else "disconnected",
+    }
+
 
 @app.get("/tasks")
 def list_tasks():
@@ -141,6 +178,7 @@ def create_task(task: TaskCreate):
                 )
 
             created_task = _fetch_task_with_shares(conn, task_id)
+            conn.commit()
 
         return _serialize_task(created_task)
     except ForeignKeyViolation as exc:
@@ -185,6 +223,7 @@ def update_task(task_id: int, task: TaskUpdate, user_id: int = Query(gt=0)):
                     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
 
             updated_task = _fetch_task_with_shares(conn, task_id)
+            conn.commit()
 
         return _serialize_task(updated_task)
     except ForeignKeyViolation as exc:
@@ -222,6 +261,7 @@ def share_task(task_id: int, payload: TaskShareUpdate):
                 )
 
             shared_task = _fetch_task_with_shares(conn, task_id)
+            conn.commit()
 
         return _serialize_task(shared_task)
     except ForeignKeyViolation as exc:

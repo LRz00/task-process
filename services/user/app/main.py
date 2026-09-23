@@ -6,6 +6,7 @@ from psycopg import OperationalError, connect
 from psycopg.errors import ForeignKeyViolation, UniqueViolation
 from psycopg.rows import dict_row
 
+from app.otel_config import init_opentelemetry, instrument_fastapi_app
 from app.schemas.user_create import UserCreate
 from app.schemas.user_group_create import UserGroupCreate
 from app.queries.user_queries import (
@@ -24,8 +25,10 @@ from app.queries.user_queries import (
 DATABASE_URL = os.getenv(
     "DATABASE_URL", "postgresql://task_user:task_password@localhost:5432/task_db"
 )
+init_opentelemetry(service_name="user-service")
 
 app = FastAPI()
+instrument_fastapi_app(app)
 
 
 def _to_iso8601(value: datetime | None) -> str | None:
@@ -51,17 +54,47 @@ def _assert_users_exist(conn, user_ids: list[int]) -> None:
             detail={"message": "some users were not found", "missing_user_ids": missing_ids},
         )
 
+def check_database(database_url: str) -> bool:
+    try:
+        with connect(database_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+        return True
+    except (OperationalError, Exception):
+        return False
+
+@app.get("/health/live")
+def liveness_probe():
+        return {
+        "status": "alive",
+        "service": "user-service",
+    }
+
+@app.get("/health/ready")
+def readiness_probe():
+    db_connected = check_database(DATABASE_URL)
+    
+    return {
+            "status": "ready" if db_connected else "not_ready",
+            "service": "user-service",
+            "checks": {
+                "database": "connected" if db_connected else "disconnected",
+            },
+        }
+
+
 @app.get("/health")
 def health():
-    try:
-        with connect(DATABASE_URL) as conn:
-            with conn.cursor() as cur:
-                cur.execute(SELECT_HEALTH_CHECK)
-                cur.fetchone()
-        database = "connected"
-    except OperationalError:
-        database = "disconnected"
-    return {"status": "OK", "database": database}
+    db_connected = check_database(DATABASE_URL)
+
+    return {
+        "status": "OK" if db_connected else "DEGRADED",
+        "service": "user-service",
+        "liveness": "alive",
+        "readiness": "ready" if db_connected else "not_ready",
+        "database": "connected" if db_connected else "disconnected",
+    }
 
 @app.get("/users")
 def list_users():
@@ -96,6 +129,7 @@ def create_user(user: UserCreate):
                     (user.name, user.email),
                 )
                 created = cur.fetchone()
+            conn.commit()
         return {
             "id": created["id"],
             "name": created["name"],
@@ -167,6 +201,8 @@ def create_user_group(payload: UserGroupCreate):
                     INSERT_USER_GROUP_MEMBERS,
                     [(group_id, user_id) for user_id in payload.user_ids],
                 )
+
+            conn.commit()
 
         return {"group_id": group_id, "user_ids": payload.user_ids}
     except ForeignKeyViolation as exc:

@@ -1,4 +1,18 @@
 services:
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger
+    ports:
+      - "6831:6831/udp"  
+      - "16686:16686"    
+    environment:
+      COLLECTOR_ZIPKIN_HOST_PORT: ":9411"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   postgres:
     image: postgres:15.3
     container_name: task-postgres
@@ -22,10 +36,14 @@ services:
     container_name: task-service
     environment:
       DATABASE_URL: postgresql://task_user:task_password@postgres:5432/task_db
+      JAEGER_HOST: jaeger
+      JAEGER_PORT: "6831"
     ports:
       - "8001:8000"
     depends_on:
       postgres:
+        condition: service_healthy
+      jaeger:
         condition: service_healthy
 
   user:
@@ -34,10 +52,14 @@ services:
     container_name: user-service
     environment:
       DATABASE_URL: postgresql://task_user:task_password@postgres:5432/task_db
+      JAEGER_HOST: jaeger
+      JAEGER_PORT: "6831"
     ports:
       - "8002:8000"
     depends_on:
       postgres:
+        condition: service_healthy
+      jaeger:
         condition: service_healthy
 
   migrations:
